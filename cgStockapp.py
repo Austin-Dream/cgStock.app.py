@@ -14,6 +14,11 @@ except ImportError:
     st.error("缺少必要的依赖包 'openpyxl'。请安装该包：pip install openpyxl")
     st.stop()
 
+try:
+    import xlrd
+except ImportError:
+    st.warning("未安装 'xlrd' 库，将无法处理 .xls 格式的Excel文件。如需支持请安装：pip install xlrd")
+
 # 设置页面配置
 st.set_page_config(
     page_title="赛狐文件和WF对接转化器",
@@ -179,6 +184,35 @@ def get_download_link(df, filename):
         st.error(f"生成下载链接时出错: {str(e)}")
         return ""
 
+def read_excel_file(uploaded_file):
+    """读取Excel文件，自动检测格式并选择合适的引擎"""
+    try:
+        # 获取文件名
+        filename = uploaded_file.name.lower()
+        
+        # 根据文件扩展名选择合适的引擎
+        if filename.endswith('.xlsx'):
+            return pd.read_excel(uploaded_file, engine='openpyxl')
+        elif filename.endswith('.xls'):
+            try:
+                return pd.read_excel(uploaded_file, engine='xlrd')
+            except ImportError:
+                st.error("无法读取 .xls 文件，请安装 xlrd: pip install xlrd")
+                return None
+        else:
+            # 尝试自动检测
+            try:
+                return pd.read_excel(uploaded_file, engine='openpyxl')
+            except:
+                try:
+                    return pd.read_excel(uploaded_file, engine='xlrd')
+                except:
+                    st.error("无法读取Excel文件，请确保文件格式正确")
+                    return None
+    except Exception as e:
+        st.error(f"读取文件时出错: {str(e)}")
+        return None
+
 def main():
     """主函数"""
     # 标题和说明
@@ -187,7 +221,7 @@ def main():
     
     st.markdown("""
     ### 使用说明
-    1. 上传从赛狐平台下载的Excel文件
+    1. 上传从赛狐平台下载的Excel文件（支持 .xlsx 和 .xls 格式）
     2. 系统将自动处理数据并生成适用于WF系统的格式
     3. 处理完成后，下载生成的文件
     
@@ -196,13 +230,18 @@ def main():
     
     # 文件上传区域
     st.markdown("### 上传文件")
-    uploaded_file = st.file_uploader("选择要处理的Excel文件", type=["xlsx"])
+    uploaded_file = st.file_uploader("选择要处理的Excel文件", type=["xlsx", "xls"])
     
     if uploaded_file is not None:
         try:
             # 读取文件
             st.info("正在读取文件...")
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
+            df = read_excel_file(uploaded_file)
+            
+            if df is None:
+                st.error("文件读取失败，请检查文件格式和依赖库")
+                return
+                
             st.success(f"成功读取文件，共 {len(df)} 行数据")
             
             # 显示原始数据预览
@@ -215,6 +254,7 @@ def main():
             
             if processed_df.empty:
                 st.error("处理完成，但没有生成有效数据，请检查原始文件格式")
+                st.info("请确保原始文件包含 'SKU' 和 'SKU数量' 列")
             else:
                 st.success(f"处理完成，生成 {len(processed_df)} 行数据")
                 
@@ -237,7 +277,12 @@ def main():
     
     # 添加页脚
     st.markdown("---")
-    st.markdown("如有问题，请检查错误日志文件或联系开发人员")
+    st.markdown("""
+    ### 技术支持
+    - 支持格式: .xlsx (推荐), .xls
+    - 依赖库: pandas, openpyxl, xlrd
+    - 如有问题，请检查文件格式或联系开发人员
+    """)
 
 if __name__ == "__main__":
     main()
