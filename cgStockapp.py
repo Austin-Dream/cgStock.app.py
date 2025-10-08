@@ -1,265 +1,243 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import re
 import io
+import base64
+import traceback
+from datetime import datetime
+
+# 检查必要依赖
+try:
+    import openpyxl
+except ImportError:
+    st.error("缺少必要的依赖包 'openpyxl'。请安装该包：pip install openpyxl")
+    st.stop()
 
 # 设置页面配置
 st.set_page_config(
-    page_title="库存汇总系统",
+    page_title="赛狐文件和WF对接转化器",
     page_icon="📊",
     layout="wide"
 )
 
-class InventorySummary:
-    def __init__(self):
-        self.cloud_df = None
-        self.cg_df = None
-        self.summary_df = None
-        # 硬编码的SKU映射表
-        self.sku_mapping = {
-            # WS007系列映射
-            "WS007-30-KING": "WS007-192-12",
-            "WS007-30-QUEEN": "WS007-152-12",
-            "WS007-30-FULL": "WS007-137-12",
-            "WS007-30-TWIN": "WS007-99-12",
-            "WS007-26-KING": "WS007-192-10",
-            "WS007-26-QUEEN": "WS007-152-10",
-            "WS007-26-FULL": "WS007-137-10",
-            "WS007-35-KING": "WS007-192-14",
-            "WS007-35-QUEEN": "WS007-152-14",
-            "WS007-35-FULL": "WS007-137-14",
-            "WS007-35-TWIN": "WS007-99-14",
-            
-            # WS008系列映射
-            "WS008-30-KING": "WS008-192-12",
-            "WS008-30-QUEEN": "WS008-152-12",
-            "WS008-30-FULL": "WS008-137-12",
-            "WS008-30-TWIN": "WS008-99-12",
-            "WS008-26-KING": "WS008-192-10",
-            "WS008-26-QUEEN": "WS008-152-10",
-            "WS008-26-FULL": "WS008-137-10",
-            "WS008-35-KING": "WS008-192-14",
-            "WS008-35-QUEEN": "WS008-152-14",
-            "WS008-35-FULL": "WS008-137-14",
-            "WS008-35-TWIN": "WS008-99-14"
-        }
-        
-        # 添加反向映射
-        self.sku_mapping.update({v: k for k, v in self.sku_mapping.items()})
-    
-    def load_cloud_inventory(self, cloud_data):
-        """加载云仓库存数据"""
-        self.cloud_df = cloud_data
-        # 清理数据，确保数值列正确
-        numeric_columns = ['代发途中', '代发库存', '中转途中', '中转库存', '待处理库存', '10天销量', '30天销量', '库龄(天)', '体积', '库存预警']
-        for col in numeric_columns:
-            if col in self.cloud_df.columns:
-                self.cloud_df[col] = pd.to_numeric(self.cloud_df[col], errors='coerce').fillna(0)
-    
-    def load_cg_inventory(self, cg_data):
-        """加载CG仓库存数据"""
-        self.cg_df = cg_data
-        # 清理数据
-        if 'In Stock' in self.cg_df.columns:
-            self.cg_df['In Stock'] = pd.to_numeric(self.cg_df['In Stock'], errors='coerce').fillna(0)
-        if 'Available' in self.cg_df.columns:
-            self.cg_df['Available'] = pd.to_numeric(self.cg_df['Available'], errors='coerce').fillna(0)
-        if 'Order Past 90 Days' in self.cg_df.columns:
-            self.cg_df['Order Past 90 Days'] = pd.to_numeric(self.cg_df['Order Past 90 Days'], errors='coerce').fillna(0)
-    
-    def generate_summary(self):
-        """生成库存汇总表"""
-        # 获取所有云仓SKU
-        cloud_skus = self.cloud_df['Fnsku'].unique() if self.cloud_df is not None else []
-        
-        # 获取所有映射表中的SKU
-        mapped_skus = list(self.sku_mapping.values())
-        
-        # 合并所有SKU
-        all_skus = list(set(list(cloud_skus) + mapped_skus))
-        all_skus = [sku for sku in all_skus if pd.notna(sku) and sku != '']
-        
-        summary_data = []
-        
-        for sku in all_skus:
-            # 获取对应的平台SKU（从映射表中查找）
-            platform_sku = self.sku_mapping.get(sku, sku)
-            
-            # 计算云仓库存
-            cloud_stock = 0
-            cloud_ca_stock = 0
-            cloud_ws_stock = 0
-            total_cloud_stock = 0
-            
-            if self.cloud_df is not None:
-                cloud_sku_data = self.cloud_df[self.cloud_df['Fnsku'] == sku]
-                if not cloud_sku_data.empty:
-                    # 代发库存就是可用库存
-                    cloud_stock = cloud_sku_data['代发库存'].sum()
-                    # 美西仓库存（X005-CA）
-                    ca_stock = cloud_sku_data[cloud_sku_data['仓库名称'] == 'X005-CA']['代发库存'].sum()
-                    cloud_ca_stock = ca_stock
-                    cloud_ws_stock = cloud_stock - ca_stock  # 其他仓库存
-                    total_cloud_stock = cloud_stock
-            
-            # 计算CG仓库存
-            cg_stock = 0
-            if self.cg_df is not None:
-                # 查找对应的CG SKU
-                cg_sku = self.sku_mapping.get(sku, '')
-                if cg_sku:
-                    # 只计算Castlegate仓库的库存
-                    cg_data = self.cg_df[
-                        (self.cg_df['Part Number'] == cg_sku) & 
-                        (self.cg_df['Warehouse Type'] == 'Castlegate')
-                    ]
-                    if not cg_data.empty:
-                        cg_stock = cg_data['Available'].sum()
-            
-            # 总库存
-            total_stock = total_cloud_stock + cg_stock
-            
-            summary_data.append({
-                'SKU': sku,
-                '平台sku': platform_sku,
-                'CALA': cloud_ca_stock,
-                'WS': cloud_ws_stock,
-                '海外仓总库存': total_cloud_stock,
-                'CG库存': cg_stock,
-                '总库存': total_stock
-            })
-        
-        self.summary_df = pd.DataFrame(summary_data)
-        
-        # 添加汇总行
-        if not self.summary_df.empty:
-            total_row = {
-                'SKU': '共计',
-                '平台sku': '',
-                'CALA': self.summary_df['CALA'].sum(),
-                'WS': self.summary_df['WS'].sum(),
-                '海外仓总库存': self.summary_df['海外仓总库存'].sum(),
-                'CG库存': self.summary_df['CG库存'].sum(),
-                '总库存': self.summary_df['总库存'].sum()
-            }
-            # 将汇总行添加到DataFrame开头
-            total_df = pd.DataFrame([total_row])
-            self.summary_df = pd.concat([total_df, self.summary_df], ignore_index=True)
-        
-        return self.summary_df
+# 固定的SKU映射表
+SKU_MAPPING = {
+    "WS007-137-10": "WS007-26-FULL",
+    "WS007-137-12": "WS007-30-FULL",
+    "WS007-137-14": "WS007-35-FULL",
+    "WS007-152-10": "WS007-26-QUEEN",
+    "WS007-152-12": "WS007-30-QUEEN",
+    "WS007-152-14": "WS007-35-QUEEN",
+    "WS007-192-10": "WS007-26-KING",
+    "WS007-192-12": "WS007-30-KING",
+    "WS007-192-14": "WS007-35-KING",
+    "WS007-99-12": "WS007-30-TWIN",
+    "WS007-99-14": "WS007-35-TWIN",
+    "WS008-137-10": "WS008-26-FULL",
+    "WS008-137-12": "WS008-30-FULL",
+    "WS008-137-14": "WS008-35-FULL",
+    "WS008-152-10": "WS008-26-QUEEN",
+    "WS008-152-12": "WS008-30-QUEEN",
+    "WS008-152-14": "WS008-35-QUEEN",
+    "WS008-192-10": "WS008-26-KING",
+    "WS008-192-12": "WS008-30-KING",
+    "WS008-192-14": "WS008-35-KING",
+    "WS008-99-12": "WS008-30-TWIN",
+    "WS008-99-14": "WS008-35-TWIN"
+}
 
-# Streamlit应用主界面
+def log_error(error_msg):
+    """记录错误到日志文件"""
+    try:
+        with open("error_log.txt", "a", encoding='utf-8') as f:
+            f.write(f"{pd.Timestamp.now()}: {error_msg}\n")
+    except Exception:
+        pass  # 如果日志写入失败，不中断程序
+
+def reverse_sku_mapping(original_sku):
+    """反向映射SKU：从值找键"""
+    try:
+        return SKU_MAPPING.get(original_sku, original_sku)
+    except Exception as e:
+        log_error(f"SKU映射错误: {str(e)}")
+        return original_sku
+
+def format_phone_number(phone_str):
+    """格式化电话号码"""
+    try:
+        if pd.isna(phone_str) or phone_str == "":
+            return ""
+        
+        phone_digits = re.sub(r'\D', '', str(phone_str))
+        
+        if len(phone_digits) == 10:
+            return f"+1 {phone_digits[:3]}-{phone_digits[3:6]}-{phone_digits[6:]}"
+        else:
+            return str(phone_str)
+    except Exception as e:
+        log_error(f"电话号码格式化错误: {str(e)}")
+        return str(phone_str)
+
+def split_address(address1, address2, door_number, max_length=35):
+    """拆分地址"""
+    try:
+        parts = []
+        for addr in [address1, address2, door_number]:
+            if pd.notna(addr) and str(addr).strip() and str(addr).strip() != "nan":
+                parts.append(str(addr).strip())
+        
+        if not parts:
+            return "", ""
+            
+        full_address = " ".join(parts)
+        
+        if len(full_address) <= max_length:
+            return full_address, ""
+        
+        split_index = max_length
+        while split_index > 0 and full_address[split_index] != ' ':
+            split_index -= 1
+        
+        if split_index == 0:
+            split_index = max_length
+        
+        address_line1 = full_address[:split_index].strip()
+        address_line2 = full_address[split_index:].strip()
+        
+        return address_line1, address_line2
+    except Exception as e:
+        log_error(f"地址拆分错误: {str(e)}")
+        return str(address1), ""
+
+def process_excel_data(df):
+    """处理在赛狐平台下载的数据"""
+    new_rows = []
+    
+    try:
+        for _, row in df.iterrows():
+            # 检查必要的列是否存在
+            if 'SKU' not in row or 'SKU数量' not in row:
+                continue
+                
+            if pd.isna(row.get('SKU')) or row.get('SKU数量', 0) == 0:
+                continue
+                
+            order_number = row.get('订单号', '')
+            quantity = int(float(row.get('SKU数量', 1)))  # 处理可能的浮点数
+            
+            for i in range(quantity):
+                new_row = {}
+                suffix = f"-{i+1}" if quantity > 1 else ""
+                
+                new_row['Retailer ID'] = ''
+                new_row['Retailer PO Number'] = f"{order_number}{suffix}"
+                new_row['Retailer Order Number'] = f"{order_number}{suffix}"
+                new_row['Recipient Order Number'] = ''
+                new_row['Part Number'] = reverse_sku_mapping(row.get('SKU', ''))
+                new_row['Quantity'] = 1
+                new_row['Fulfillment Warehouse ID'] = ''
+                new_row['Shipping Account Number'] = ''
+                new_row['SCAC Code'] = ''
+                new_row['Ship Speed'] = ''
+                new_row['Shipping Name'] = row.get('收件人', '')
+                
+                addr1, addr2 = split_address(
+                    row.get('地址1', ''),
+                    row.get('地址2', ''),
+                    row.get('门牌号', '')
+                )
+                new_row['Shipping Address 1'] = addr1
+                new_row['Shipping Address 2'] = addr2
+                
+                new_row['Shipping City'] = row.get('城市', '')
+                new_row['Shipping State'] = row.get('州/省', '')
+                new_row['Shipping Postal Code'] = row.get('邮编', '')
+                new_row['Shipping Country'] = 'US'
+                new_row['Shipping Phone Number'] = format_phone_number(row.get('电话', ''))
+                new_row['Shipping Email'] = 'tpcfjjyxgs@163.com'
+                
+                new_rows.append(new_row)
+                
+    except Exception as e:
+        log_error(f"数据处理错误: {str(e)}")
+        st.error(f"数据处理错误: {str(e)}")
+    
+    return pd.DataFrame(new_rows)
+
+def get_download_link(df, filename):
+    """生成下载链接"""
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        processed_data = output.getvalue()
+        b64 = base64.b64encode(processed_data).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">点击下载处理后的文件</a>'
+        return href
+    except Exception as e:
+        st.error(f"生成下载链接时出错: {str(e)}")
+        return ""
+
 def main():
-    st.title("📊 库存汇总系统")
-    st.markdown("上传云仓和CG仓库存数据，自动生成库存汇总表")
+    """主函数"""
+    # 标题和说明
+    st.title("赛狐文件和WF对接转化器")
+    st.markdown("---")
+    
+    st.markdown("""
+    ### 使用说明
+    1. 上传从赛狐平台下载的Excel文件
+    2. 系统将自动处理数据并生成适用于WF系统的格式
+    3. 处理完成后，下载生成的文件
+    
+    **注意：** 此工具仅适用于赛狐和WF多渠道对接
+    """)
     
     # 文件上传区域
-    col1, col2 = st.columns(2)
+    st.markdown("### 上传文件")
+    uploaded_file = st.file_uploader("选择要处理的Excel文件", type=["xlsx"])
     
-    with col1:
-        st.subheader("1. 上传云仓库存数据")
-        cloud_file = st.file_uploader("选择云仓Excel文件", type=["xlsx"], key="cloud")
-        
-    with col2:
-        st.subheader("2. 上传CG仓库存数据")
-        cg_file = st.file_uploader("选择CG仓Excel文件", type=["xls", "xlsx"], key="cg")
+    if uploaded_file is not None:
+        try:
+            # 读取文件
+            st.info("正在读取文件...")
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+            st.success(f"成功读取文件，共 {len(df)} 行数据")
+            
+            # 显示原始数据预览
+            with st.expander("查看原始数据预览"):
+                st.dataframe(df.head())
+            
+            # 处理数据
+            st.info("正在处理数据...")
+            processed_df = process_excel_data(df)
+            
+            if processed_df.empty:
+                st.error("处理完成，但没有生成有效数据，请检查原始文件格式")
+            else:
+                st.success(f"处理完成，生成 {len(processed_df)} 行数据")
+                
+                # 显示处理后的数据预览
+                with st.expander("查看处理后的数据预览"):
+                    st.dataframe(processed_df.head())
+                
+                # 生成下载链接
+                original_filename = uploaded_file.name
+                base_name = original_filename.split('.')[0]
+                download_filename = f"{base_name}_处理结果.xlsx"
+                
+                st.markdown("### 下载处理结果")
+                st.markdown(get_download_link(processed_df, download_filename), unsafe_allow_html=True)
+                
+        except Exception as e:
+            st.error(f"处理出错: {str(e)}")
+            st.code(traceback.format_exc())
+            log_error(f"处理出错: {str(e)}\n{traceback.format_exc()}")
     
-    # 处理按钮
-    if st.button("生成库存汇总表", type="primary"):
-        if cloud_file is None or cg_file is None:
-            st.error("请上传两个数据文件")
-            return
-        
-        # 显示加载状态
-        with st.spinner("正在处理数据..."):
-            try:
-                # 初始化库存汇总器
-                inventory = InventorySummary()
-                
-                # 加载云仓库存
-                cloud_data = pd.read_excel(cloud_file)
-                inventory.load_cloud_inventory(cloud_data)
-                
-                # 加载CG仓库存
-                cg_data = pd.read_excel(cg_file)
-                inventory.load_cg_inventory(cg_data)
-                
-                # 生成汇总表
-                summary = inventory.generate_summary()
-                
-                # 显示成功消息
-                st.success("库存汇总表生成成功！")
-                
-                # 显示汇总表
-                st.subheader("库存汇总表")
-                st.dataframe(summary, use_container_width=True)
-                
-                # 添加下载按钮
-                st.subheader("下载汇总表")
-                
-                # 将DataFrame转换为Excel文件供下载
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    summary.to_excel(writer, sheet_name='库存汇总', index=False)
-                    
-                    # 设置列宽
-                    worksheet = writer.sheets['库存汇总']
-                    column_widths = {
-                        'A': 15, 'B': 15, 'C': 8, 'D': 8, 
-                        'E': 12, 'F': 8, 'G': 8
-                    }
-                    for col, width in column_widths.items():
-                        worksheet.column_dimensions[col].width = width
-                
-                output.seek(0)
-                
-                st.download_button(
-                    label="下载Excel文件",
-                    data=output,
-                    file_name=f"库存汇总表_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                # 显示统计信息
-                st.subheader("库存统计")
-                col1, col2, col3, col4 = st.columns(4)
-                
-                total_stock = summary[summary['SKU'] == '共计']['总库存'].values[0]
-                cg_stock = summary[summary['SKU'] == '共计']['CG库存'].values[0]
-                cloud_stock = summary[summary['SKU'] == '共计']['海外仓总库存'].values[0]
-                sku_count = len(summary) - 1  # 减去汇总行
-                
-                col1.metric("总库存数量", f"{total_stock:,}")
-                col2.metric("CG仓库存", f"{cg_stock:,}")
-                col3.metric("云仓库存", f"{cloud_stock:,}")
-                col4.metric("SKU数量", f"{sku_count}")
-                
-            except Exception as e:
-                st.error(f"处理数据时出错: {str(e)}")
-    
-    # 侧边栏信息
-    with st.sidebar:
-        st.header("使用说明")
-        st.markdown("""
-        1. 上传云仓库存Excel文件（.xlsx格式）
-        2. 上传CG仓库存Excel文件（.xls或.xlsx格式）
-        3. 点击"生成库存汇总表"按钮
-        4. 查看和下载生成的汇总表
-        
-        **注意事项：**
-        - 云仓文件应包含"Fnsku"和"代发库存"列
-        - CG仓文件应包含"Part Number"和"Available"列
-        - SKU映射关系已内置在系统中
-        """)
-        
-        st.header("关于")
-        st.markdown("""
-        本系统自动整合云仓和CG仓库存数据，
-        通过内置的SKU映射表生成统一的库存汇总表。
-        
-        如有问题，请联系技术支持。
-        """)
+    # 添加页脚
+    st.markdown("---")
+    st.markdown("如有问题，请检查错误日志文件或联系开发人员")
 
 if __name__ == "__main__":
     main()
