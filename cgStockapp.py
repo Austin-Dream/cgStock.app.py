@@ -88,8 +88,8 @@ class InventorySummary:
             
             # 计算云仓库存
             cloud_stock = 0
-            cloud_ca_stock = 0
-            cloud_ws_stock = 0
+            x005_ca_stock = 0
+            d004_nj_stock = 0
             total_cloud_stock = 0
             
             if self.cloud_df is not None:
@@ -97,10 +97,10 @@ class InventorySummary:
                 if not cloud_sku_data.empty:
                     # 代发库存就是可用库存
                     cloud_stock = cloud_sku_data['代发库存'].sum()
-                    # 美西仓库存（X005-CA）
-                    ca_stock = cloud_sku_data[cloud_sku_data['仓库名称'] == 'X005-CA']['代发库存'].sum()
-                    cloud_ca_stock = ca_stock
-                    cloud_ws_stock = cloud_stock - ca_stock  # 其他仓库存
+                    # X005-CA仓库库存
+                    x005_ca_stock = cloud_sku_data[cloud_sku_data['仓库名称'] == 'X005-CA']['代发库存'].sum()
+                    # D004-NJ仓库库存
+                    d004_nj_stock = cloud_sku_data[cloud_sku_data['仓库名称'] == 'D004-NJ']['代发库存'].sum()
                     total_cloud_stock = cloud_stock
             
             # 计算CG仓库存
@@ -120,8 +120,8 @@ class InventorySummary:
             summary_data.append({
                 'SKU': cloud_sku,  # 使用云仓SKU格式
                 '平台sku': cg_sku,  # 使用CG仓SKU格式
-                'CALA': cloud_ca_stock,
-                'WS': cloud_ws_stock,
+                'X005-CA': x005_ca_stock,  # 改为X005-CA
+                'D004-NJ': d004_nj_stock,  # 改为D004-NJ
                 '海外仓总库存': total_cloud_stock,
                 'CG库存': cg_stock,
                 '总库存': total_stock
@@ -134,8 +134,8 @@ class InventorySummary:
             total_row = {
                 'SKU': '共计',
                 '平台sku': '',
-                'CALA': self.summary_df['CALA'].sum(),
-                'WS': self.summary_df['WS'].sum(),
+                'X005-CA': self.summary_df['X005-CA'].sum(),
+                'D004-NJ': self.summary_df['D004-NJ'].sum(),
                 '海外仓总库存': self.summary_df['海外仓总库存'].sum(),
                 'CG库存': self.summary_df['CG库存'].sum(),
                 '总库存': self.summary_df['总库存'].sum()
@@ -213,7 +213,7 @@ def main():
                     # 设置列宽
                     worksheet = writer.sheets['库存汇总']
                     column_widths = {
-                        'A': 15, 'B': 15, 'C': 8, 'D': 8, 
+                        'A': 15, 'B': 15, 'C': 10, 'D': 10, 
                         'E': 12, 'F': 8, 'G': 8
                     }
                     for col, width in column_widths.items():
@@ -262,8 +262,12 @@ def main():
         - 如果CG仓文件是.xls格式，请确保已安装xlrd库
         """)
         
-        st.header("SKU映射说明")
+        st.header("仓库映射说明")
         st.markdown("""
+        **X005-CA列：** 对应云仓X005-CA仓库的库存
+        
+        **D004-NJ列：** 对应云仓D004-NJ仓库的库存
+        
         **SKU列格式：** WS007-192-12 (云仓SKU)
         
         **平台SKU列格式：** WS007-30-KING (CG仓SKU)
