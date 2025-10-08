@@ -16,8 +16,8 @@ class InventorySummary:
         self.cloud_df = None
         self.cg_df = None
         self.summary_df = None
-        # 硬编码的SKU映射表
-        self.sku_mapping = {
+        # 硬编码的SKU映射表 - CG仓SKU到云仓SKU的映射
+        self.cg_to_cloud_mapping = {
             # WS007系列映射
             "WS007-30-KING": "WS007-192-12",
             "WS007-30-QUEEN": "WS007-152-12",
@@ -45,8 +45,8 @@ class InventorySummary:
             "WS008-35-TWIN": "WS008-99-14"
         }
         
-        # 添加反向映射
-        self.sku_mapping.update({v: k for k, v in self.sku_mapping.items()})
+        # 创建云仓SKU到CG仓SKU的反向映射
+        self.cloud_to_cg_mapping = {v: k for k, v in self.cg_to_cloud_mapping.items()}
     
     def load_cloud_inventory(self, cloud_data):
         """加载云仓库存数据"""
@@ -73,18 +73,18 @@ class InventorySummary:
         # 获取所有云仓SKU
         cloud_skus = self.cloud_df['Fnsku'].unique() if self.cloud_df is not None else []
         
-        # 获取所有映射表中的SKU
-        mapped_skus = list(self.sku_mapping.values())
+        # 获取所有映射表中的云仓SKU
+        mapped_cloud_skus = list(self.cloud_to_cg_mapping.keys())
         
-        # 合并所有SKU
-        all_skus = list(set(list(cloud_skus) + mapped_skus))
-        all_skus = [sku for sku in all_skus if pd.notna(sku) and sku != '']
+        # 合并所有云仓SKU
+        all_cloud_skus = list(set(list(cloud_skus) + mapped_cloud_skus))
+        all_cloud_skus = [sku for sku in all_cloud_skus if pd.notna(sku) and sku != '']
         
         summary_data = []
         
-        for sku in all_skus:
-            # 获取对应的平台SKU（从映射表中查找）
-            platform_sku = self.sku_mapping.get(sku, sku)
+        for cloud_sku in all_cloud_skus:
+            # 获取对应的CG仓SKU（平台SKU）
+            cg_sku = self.cloud_to_cg_mapping.get(cloud_sku, "")
             
             # 计算云仓库存
             cloud_stock = 0
@@ -93,7 +93,7 @@ class InventorySummary:
             total_cloud_stock = 0
             
             if self.cloud_df is not None:
-                cloud_sku_data = self.cloud_df[self.cloud_df['Fnsku'] == sku]
+                cloud_sku_data = self.cloud_df[self.cloud_df['Fnsku'] == cloud_sku]
                 if not cloud_sku_data.empty:
                     # 代发库存就是可用库存
                     cloud_stock = cloud_sku_data['代发库存'].sum()
@@ -105,24 +105,21 @@ class InventorySummary:
             
             # 计算CG仓库存
             cg_stock = 0
-            if self.cg_df is not None:
-                # 查找对应的CG SKU
-                cg_sku = self.sku_mapping.get(sku, '')
-                if cg_sku:
-                    # 只计算Castlegate仓库的库存
-                    cg_data = self.cg_df[
-                        (self.cg_df['Part Number'] == cg_sku) & 
-                        (self.cg_df['Warehouse Type'] == 'Castlegate')
-                    ]
-                    if not cg_data.empty:
-                        cg_stock = cg_data['Available'].sum()
+            if self.cg_df is not None and cg_sku:
+                # 只计算Castlegate仓库的库存
+                cg_data = self.cg_df[
+                    (self.cg_df['Part Number'] == cg_sku) & 
+                    (self.cg_df['Warehouse Type'] == 'Castlegate')
+                ]
+                if not cg_data.empty:
+                    cg_stock = cg_data['Available'].sum()
             
             # 总库存
             total_stock = total_cloud_stock + cg_stock
             
             summary_data.append({
-                'SKU': sku,
-                '平台sku': platform_sku,
+                'SKU': cloud_sku,  # 使用云仓SKU格式
+                '平台sku': cg_sku,  # 使用CG仓SKU格式
                 'CALA': cloud_ca_stock,
                 'WS': cloud_ws_stock,
                 '海外仓总库存': total_cloud_stock,
@@ -265,17 +262,13 @@ def main():
         - 如果CG仓文件是.xls格式，请确保已安装xlrd库
         """)
         
-        st.header("文件格式要求")
+        st.header("SKU映射说明")
         st.markdown("""
-        **云仓文件列名：**
-        - Fnsku
-        - 代发库存
-        - 仓库名称
+        **SKU列格式：** WS007-192-12 (云仓SKU)
         
-        **CG仓文件列名：**
-        - Part Number
-        - Available
-        - Warehouse Type
+        **平台SKU列格式：** WS007-30-KING (CG仓SKU)
+        
+        系统会自动根据内置映射表进行转换。
         """)
         
         st.header("关于")
